@@ -138,6 +138,12 @@ h1,h2,h3,.orb{font-family:'Orbitron','Segoe UI',sans-serif}
 #parts{margin:8px 0 0 52px;font-family:'Orbitron';font-size:12px;letter-spacing:.12em;color:#cfe;background:rgba(0,0,0,.5);border:1px solid var(--line);padding:4px 10px;display:inline-block}
 #parts b{color:var(--amber)} #parts.done{color:var(--green);border-color:var(--green)} #parts.done b{color:var(--green)}
 .float.heal{color:#6dff9a;font-size:26px}
+#banner{position:absolute;left:50%;top:11vh;transform:translateX(-50%);max-width:92vw;text-align:center;padding:10px 26px;background:rgba(6,10,20,.78);border:1.5px solid var(--amber);
+  font-family:'Orbitron';font-weight:700;font-size:clamp(17px,2.9vw,36px);letter-spacing:.08em;color:#ffe9c4;text-shadow:0 0 14px rgba(255,180,84,.7);opacity:0;transition:opacity .5s;pointer-events:none}
+#banner.show{opacity:1}
+#laser-warn{position:fixed;top:0;width:14vw;height:100vh;z-index:11;pointer-events:none;opacity:0}
+#laser-warn.on{animation:lwarn .3s infinite}
+@keyframes lwarn{0%,100%{opacity:.25}50%{opacity:1}}
 </style>
 
 <script type="importmap">
@@ -173,12 +179,13 @@ h1,h2,h3,.orb{font-family:'Orbitron','Segoe UI',sans-serif}
     <div class="name">ANTAGONISTA</div>
     <div class="bar enemy" id="en-bar"><div class="lag"></div><div class="fill"></div><span>100 / 100</span></div>
   </div>
+  <div id="banner"></div>
   <div id="hud-hint"></div>
   <div id="hud-prompt" class="hidden"></div>
   <div id="hud-obj"></div>
   <div id="hud-controls">W A S D · Mover &nbsp;|&nbsp; ESPACIO · Esquivar &nbsp;|&nbsp; CLIC IZQ. · Atacar &nbsp;|&nbsp; E · Interactuar &nbsp;|&nbsp; ESC · Pausa</div>
 </div>
-<div id="hurt"></div><div id="flash"></div><div id="floaters"></div>
+<div id="laser-warn"></div><div id="hurt"></div><div id="flash"></div><div id="floaters"></div>
 
 <!-- Carga -->
 <div id="screen-loading" class="screen">
@@ -776,6 +783,8 @@ function updateFloaters(dt){
 let shake = 0;
 const flashEl = $('flash'), hurtEl = $('hurt');
 function screenFlash(color='#fff', a=.8){ flashEl.style.background=color; flashEl.style.transition='none'; flashEl.style.opacity=a; void flashEl.offsetWidth; flashEl.style.transition='opacity .9s'; flashEl.style.opacity=0; }
+let bannerT=null;
+function showBanner(text,ms=7000){ const b=$('banner'); b.textContent=text; b.classList.add('show'); clearTimeout(bannerT); bannerT=setTimeout(()=>b.classList.remove('show'),ms); }
 let hintT=null;
 function hint(text, ms=3000){ const h=$('hud-hint'); h.textContent=text; h.classList.add('show'); clearTimeout(hintT); hintT=setTimeout(()=>h.classList.remove('show'),ms); }
 
@@ -961,6 +970,7 @@ async function setupLevel(i){
     for(const e of lv.enemies){ scene.remove(e.root); if(e.shadow) scene.remove(e.shadow); if(e.tele) scene.remove(e.tele); if(e.beam) scene.remove(e.beam); if(e.shieldMesh) scene.remove(e.shieldMesh); }
     for(const w of lv.waves) scene.remove(w.mesh);
     for(const p of lv.parts){ scene.remove(p.root); scene.remove(p.shadow); }
+    for(const hz of lv.haz) scene.remove(hz.mesh);
     for(const h of lv.heals){ scene.remove(h.root); scene.remove(h.shadow); }
     for(const p of lv.pickups){ scene.remove(p.root); }
     for(const o of lv.orbs) scene.remove(o.mesh);
@@ -971,9 +981,9 @@ async function setupLevel(i){
   for(const f of floaters) f.el.remove(); floaters.length=0;
 
   const cfg=LEVELS[i], asset=prepareLevelAsset(i);
-  cur={ ...asset, cs: BVH ? 1.0 : 2.0, region:null };
+  cur={ ...asset, meshes:asset.meshes.slice(), cs: BVH ? 1.0 : 2.0, region:null };
   scene.add(cur.root);
-  lv={ i, enemies:[], pickups:[], orbs:[], extraLights:[], waves:[], parts:[], heals:[], partsSpawned:false, partsTotal:0, partsGot:0, enemyTimer:null, enemySpawned:false, won:false, wonT:0, t:0, spawn:null, cfg };
+  lv={ i, enemies:[], pickups:[], orbs:[], extraLights:[], waves:[], parts:[], heals:[], partsSpawned:false, partsTotal:0, partsGot:0, haz:[], sweepCd:1.5, sweepDir:1, volleyCd:1.5, volley:null, hintSweep:false, hintVolley:false, enemyTimer:null, enemySpawned:false, won:false, wonT:0, t:0, spawn:null, cfg };
 
   fadeText(cfg.title, 'Preparando escenario…');
   await sleep(30);
@@ -1006,14 +1016,14 @@ async function setupLevel(i){
     else lv.enemyTimer=1.6;
   } else lv.enemyTimer=1.8;
 
-  spawnHeals(); $('parts').classList.add('hidden');
+  spawnHeals(); if(i===0) decorateLevel1(sp); $('parts').classList.add('hidden'); $('banner').classList.remove('show'); $('laser-warn').classList.remove('on');
   $('hud-level').textContent = cfg.title;
   setEnemyHud(null); $('hud-prompt').classList.add('hidden');
   updateObjective();
   $('hud-controls').style.opacity=1; setTimeout(()=>{ if(lv&&lv.i===i) $('hud-controls').style.opacity=.0; }, 14000);
 }
 
-const PARTS_COUNT=[1,2,3];      // partes de la nave que aparecen en el nivel 1, 2 y 3
+const PARTS_COUNT=[1,3,5];      // partes de la nave que aparecen en el nivel 1, 2 y 3
 const PARTS_REQUIRED=true;      // true: hay que derrotar al antagonista Y recoger todas las partes para pasar de nivel
 const HEAL_AMOUNT=40;           // vida que devuelve cada cruz verde
 let partTex=null, partLabelTex=null;
@@ -1053,7 +1063,7 @@ function spawnParts(n){
     lv.parts.push({root,disc,glow,shadow,x:cell.x,y:cell.y,z:cell.z,t:Math.random()*6});
   }
   setPartsHud(); updateObjective();
-  const L=lv; setTimeout(()=>{ if(lv===L && !L.won && state==='playing') hint('RECOGE LAS '+(n>1?n+' PARTES':'PARTE')+' DE LA NAVE',3200); },3300);
+  showBanner(n>1 ? 'ENCUENTRA LAS '+n+' PIEZAS FALTANTES DE LA NAVE' : 'ENCUENTRA LA PIEZA FALTANTE DE LA NAVE', 8000);
 }
 function collectPart(i){
   const p=lv.parts[i]; scene.remove(p.root); scene.remove(p.shadow); lv.parts.splice(i,1); lv.partsGot++;
@@ -1075,6 +1085,58 @@ function spawnHeals(){
     const shadow=makeShadow(1.3); shadow.position.set(cell.x,cell.y+0.06,cell.z);
     lv.heals.push({root,holder,glow,shadow,x:cell.x,y:cell.y,z:cell.z,t:Math.random()*6});
   }
+}
+// Césped (poco, instanciado) y rocas con colisión para dar relleno al nivel 1
+function decorateLevel1(sp){
+  const R=cur.region, cells=[];
+  for(const idx of R.list){ const i=idx%R.W, k=(idx/R.W)|0; cells.push({idx,i,k,x:R.ox+i*R.cs,z:R.oz+k*R.cs,y:R.Y[idx]}); }
+  if(cells.length<30) return;
+  const avoid=[{x:sp.x,z:sp.z,r:3.5}];
+  if(lv.fire) avoid.push({x:lv.fire.grp.position.x,z:lv.fire.grp.position.z,r:5.5});
+  for(const p of lv.pickups) avoid.push({x:p.x,z:p.z,r:2.5});
+  for(const h of lv.heals) avoid.push({x:h.x,z:h.z,r:2.5});
+  const free=(x,z,extra)=>avoid.every(a=>Math.hypot(a.x-x,a.z-z)>a.r+(extra||0));
+  const fx=(lv.fxObjs=lv.fxObjs||[]);
+  // rocas
+  const rockMat=new THREE.MeshStandardMaterial({color:0x7b7e86,roughness:1,flatShading:true});
+  const proxyMat=new THREE.MeshBasicMaterial({side:THREE.DoubleSide,visible:false});
+  const nRocks=12; let placed=0, tries=0; const rocks=[];
+  while(placed<nRocks && tries++<200){
+    const c=cells[(Math.random()*cells.length)|0];
+    if(!free(c.x,c.z,1.5) || rocks.some(r=>Math.hypot(r.x-c.x,r.z-c.z)<4)) continue;
+    let inner=true; for(let a=-1;a<=1&&inner;a++) for(let b=-1;b<=1;b++){ if(R.vis[(c.k+b)*R.W+(c.i+a)]!==1){ inner=false; break; } }
+    if(!inner) continue;
+    const sc=rand(0.55,1.1), sx=sc*rand(1,1.4), sy=sc*rand(0.55,0.9), sz=sc*rand(1,1.4);
+    const g=new THREE.IcosahedronGeometry(1,1); const pa=g.attributes.position;
+    for(let v=0;v<pa.count;v++){ const f=1+(Math.random()-0.5)*0.22; pa.setXYZ(v,pa.getX(v)*f,pa.getY(v)*f,pa.getZ(v)*f); } g.computeVertexNormals();
+    const m=new THREE.Mesh(g,rockMat.clone()); m.material.color.offsetHSL(0,0,rand(-0.06,0.06));
+    m.scale.set(sx,sy,sz); m.rotation.y=Math.random()*6.28; m.position.set(c.x,c.y+sy*0.3,c.z); scene.add(m); fx.push(m);
+    const rr=Math.max(sx,sz)*0.85;
+    const proxy=new THREE.Mesh(new THREE.CylinderGeometry(rr,rr,1.8,10),proxyMat); proxy.position.set(c.x,c.y+0.8,c.z); proxy.updateMatrixWorld(true);
+    cur.meshes.push(proxy); fx.push(proxy); scene.add(proxy);
+    rocks.push({x:c.x,z:c.z,r:rr+0.6}); placed++;
+  }
+  // las celdas ocupadas por rocas dejan de ser válidas para objetos/enemigos
+  if(rocks.length){ for(const c of cells){ if(rocks.some(r=>Math.hypot(r.x-c.x,r.z-c.z)<r.r)) R.vis[c.idx]=2; } R.list=R.list.filter(idx=>R.vis[idx]===1); }
+  // césped
+  const N=240, pos=[], nor=[];
+  for(let b=0;b<5;b++){ const a=b*1.2566+Math.random()*0.3, ox=Math.cos(a)*0.12, oz=Math.sin(a)*0.12, h=0.45+Math.random()*0.35, w=0.07, lx=Math.cos(a)*0.15, lz=Math.sin(a)*0.15, cc=Math.cos(a+1.57)*w, ss=Math.sin(a+1.57)*w;
+    pos.push(ox-cc,0,oz-ss, ox+cc,0,oz+ss, ox+lx,h,oz+lz); nor.push(0,1,0,0,1,0,0,1,0); }
+  const gg=new THREE.BufferGeometry(); gg.setAttribute('position',new THREE.Float32BufferAttribute(pos,3)); gg.setAttribute('normal',new THREE.Float32BufferAttribute(nor,3));
+  const inst=new THREE.InstancedMesh(gg,new THREE.MeshStandardMaterial({color:0xffffff,side:THREE.DoubleSide,roughness:1}),N); inst.frustumCulled=false;
+  const dummy=new THREE.Object3D(), col=new THREE.Color(); let n=0, guard=0;
+  while(n<N && guard++<2000){
+    const c=cells[(Math.random()*cells.length)|0]; const cnt=10+((Math.random()*10)|0);
+    for(let q=0;q<cnt&&n<N;q++){
+      const x=c.x+rand(-1.6,1.6), z=c.z+rand(-1.6,1.6);
+      if(!free(x,z,0.3) || rocks.some(r=>Math.hypot(r.x-x,r.z-z)<r.r-0.2)) continue;
+      dummy.position.set(x,c.y-0.03,z); dummy.rotation.set(0,Math.random()*6.28,0); const s2=rand(0.7,1.4); dummy.scale.set(s2,s2*rand(0.8,1.3),s2); dummy.updateMatrix();
+      inst.setMatrixAt(n,dummy.matrix); col.setHSL(0.26+Math.random()*0.07,0.5,0.26+Math.random()*0.12); inst.setColorAt(n,col); n++;
+    }
+    if(n>=N*0.7 && guard>40) break;
+  }
+  inst.count=n; inst.instanceMatrix.needsUpdate=true; if(inst.instanceColor) inst.instanceColor.needsUpdate=true;
+  scene.add(inst); fx.push(inst);
 }
 let fireTex=null, smokeTex=null;
 function buildShip(sp){
@@ -1278,7 +1340,7 @@ function spawnEnemy(idx){
   const e={ def, idx, root,yaw,tilt, mats:collectMats(m.group), shadow:makeShadow(Math.max(2.2,def.r*2.6)), tele,
     x:cell.x,y:cell.y,z:cell.z,gy:cell.y, r:def.r, hts:[0.4,Math.max(1,H*0.5)], H,
     hp:STATS.enemyHP[idx], max:STATS.enemyHP[idx], state:'spawn', st:0, t:Math.random()*6, face:Math.atan2(P.x-cell.x,P.z-cell.z),
-    kx:0,kz:0, stun:0, flash:0, hitAnim:0, cd:1.0, orbCd:2.0, chargeCd:3, stuck:0, sideT:0, sideDir:1, atk:null, hitDone:false, dirx:0,dirz:1, rage:false, deadT:0, moving:0, dmg:def.dmg||STATS.enemyDamage, laserDmg:20, laserCd:3, shield:0, windDur:0.5, beam, shieldMesh, beamLen:10, waveU, ph:0, hopV:0, landV:0, prevS:0, amp:0, sinceHit:0, regenAcc:0, regenFx:0, sh:Math.max(2.2,def.r*2.6) };
+    kx:0,kz:0, stun:0, flash:0, hitAnim:0, cd:1.0, orbCd:2.0, chargeCd:3, stuck:0, sideT:0, sideDir:1, atk:null, hitDone:false, dirx:0,dirz:1, rage:false, deadT:0, moving:0, dmg:def.dmg||STATS.enemyDamage, laserDmg:20, laserCd:3, shield:0, windDur:0.5, beam, shieldMesh, beamLen:10, waveU, ph:0, hopV:0, landV:0, prevS:0, amp:0, sinceHit:0, regenAcc:0, regenFx:0, burstLeft:0, sh:Math.max(2.2,def.r*2.6) };
   lv.enemies.push(e); lv.enemySpawned=true;
   playMusic(['l1t','l2t','l3'][idx]); sfx('spawn'); shake=0.7; spawnParts(PARTS_COUNT[idx]); screenFlash('#ff8899',.35);
   burst(new THREE.Vector3(e.x,e.y+0.5,e.z),0xff5a8a,26,7,5);
@@ -1295,7 +1357,7 @@ function hitEnemy(e, dmg, crit){
   e.kx=dx/l*(armored?1.5:9); e.kz=dz/l*(armored?1.5:9);
   if(!armored){
     e.stun=e.def.stun;
-    if(attacking){ e.state='chase'; e.tele.visible=false; if(e.beam) e.beam.visible=false; e.cd=0.55; }
+    if(attacking){ e.state='chase'; e.tele.visible=false; if(e.beam) e.beam.visible=false; e.burstLeft=0; e.cd=0.55; }
   }
   floater(new THREE.Vector3(e.x,e.y+e.H+0.4,e.z),crit?'¡CRÍTICO! -'+dmg:'-'+dmg,crit?'dmg crit':'dmg');
   burst(new THREE.Vector3(e.x,e.y+e.H*0.5,e.z),crit?0xffb020:0xffe46b,crit?30:12,crit?8:5,crit?6:4);
@@ -1311,6 +1373,61 @@ function killEnemy(e){
   setEnemyHud(null);
   lv.won=true; lv.wonT=0; updateObjective();
   hint(e.def.name+' DERROTADO'+((PARTS_REQUIRED&&lv.partsGot<lv.partsTotal)?' — ¡RECOGE LAS PARTES!':''),3200);
+}
+// ---- Láseres de arena del antagonista 3 ----
+const HAZ_DMG=10;
+const hazMat=()=>new THREE.MeshBasicMaterial({color:0xff3050,transparent:true,opacity:0.9,depthWrite:false,blending:THREE.AdditiveBlending,fog:false});
+function warnEdge(side){ const w=$('laser-warn'); if(!side){ w.classList.remove('on'); return; } w.style.left=side>0?'0':'auto'; w.style.right=side>0?'auto':'0'; w.style.background='linear-gradient('+(side>0?'90deg':'270deg')+',rgba(255,40,70,.65),transparent)'; w.classList.add('on'); }
+function spawnSweep(dir){
+  const b=cur.box, depth=b.max.z-b.min.z+6;
+  const mesh=new THREE.Mesh(new THREE.BoxGeometry(0.8,1.3,depth),hazMat());
+  const x0=dir>0?b.min.x-1:b.max.x+1, x1=dir>0?b.max.x+1:b.min.x-1;
+  mesh.position.set(x0,lv.spawn.y+1.0,(b.min.z+b.max.z)/2); mesh.visible=false; scene.add(mesh);
+  lv.haz.push({kind:'sweep',t:0,tele:1.3,dur:3.6,mesh,x0,x1,hit:false,dir});
+  warnEdge(dir); sfx('orb');
+}
+function spawnLine(boss){
+  const dx=P.x-boss.x, dz=P.z-boss.z, l=Math.hypot(dx,dz)||1, ux=dx/l, uz=dz/l, L=48;
+  const mesh=new THREE.Mesh(new THREE.BoxGeometry(1,1,L),hazMat());
+  mesh.position.set(boss.x+ux*L/2,boss.y+1.3,boss.z+uz*L/2); mesh.rotation.y=Math.atan2(ux,uz); mesh.scale.set(0.15,0.15,1); scene.add(mesh);
+  lv.haz.push({kind:'line',t:0,tele:0.55,fire:0.22,mesh,ox:boss.x,oz:boss.z,ux,uz,L,hit:false,fired:false});
+}
+function updateHazards(dt){
+  const boss=lv.enemies.find(e=>e.idx===2&&e.state!=='dead'&&e.state!=='spawn'&&!e.removed);
+  if(!boss||P.dead){ for(const h of lv.haz) scene.remove(h.mesh); lv.haz.length=0; lv.volley=null; warnEdge(0); return; }
+  const hp=boss.hp;
+  if(hp<=170 && hp>120){
+    lv.sweepCd-=dt;
+    if(lv.sweepCd<=0){ spawnSweep(lv.sweepDir); lv.sweepDir*=-1; lv.sweepCd=6.5;
+      if(!lv.hintSweep){ lv.hintSweep=true; hint('¡LÁSER DE PUNTA A PUNTA! ESQUÍVALO CON ESPACIO',3200); } }
+  }
+  if(hp<=70){
+    lv.volleyCd-=dt;
+    if(lv.volleyCd<=0 && !lv.volley){ lv.volley={left:5,timer:0}; lv.volleyCd=8;
+      if(!lv.hintVolley){ lv.hintVolley=true; hint('¡RÁFAGA DE LÁSERES! ESQUIVA CON ESPACIO',3200); } }
+  }
+  if(lv.volley){ lv.volley.timer-=dt; if(lv.volley.timer<=0){ spawnLine(boss); sfx('laser'); lv.volley.left--; lv.volley.timer=0.5; if(lv.volley.left<=0) lv.volley=null; } }
+  for(let i=lv.haz.length-1;i>=0;i--){
+    const h=lv.haz[i]; h.t+=dt; let done=false;
+    if(h.kind==='sweep'){
+      if(h.t<h.tele){ h.mesh.visible=false; }
+      else {
+        if(!h.mesh.visible){ h.mesh.visible=true; warnEdge(0); sfx('laser'); }
+        const k=(h.t-h.tele)/h.dur; h.mesh.position.x=h.x0+(h.x1-h.x0)*k; h.mesh.material.opacity=0.85+0.1*Math.sin(h.t*40);
+        if(!h.hit && Math.abs(P.x-h.mesh.position.x)<0.4+P.r){ if(hurtPlayer(HAZ_DMG,{x:h.mesh.position.x,z:P.z})) h.hit=true; }
+        if(k>=1) done=true;
+      }
+    } else {
+      if(h.t<h.tele){ h.mesh.material.opacity=0.3+0.3*Math.sin(h.t*30); }
+      else {
+        if(!h.fired){ h.fired=true; h.mesh.scale.set(0.55,0.55,1); h.mesh.material.opacity=0.95; }
+        if(!h.hit){ const rx=P.x-h.ox, rz=P.z-h.oz, along=rx*h.ux+rz*h.uz, perp=Math.abs(rx*h.uz-rz*h.ux);
+          if(along>0 && along<h.L && perp<0.4+P.r){ if(hurtPlayer(HAZ_DMG,{x:h.ox,z:h.oz})) h.hit=true; } }
+        if(h.t>=h.tele+h.fire) done=true;
+      }
+    }
+    if(done){ scene.remove(h.mesh); lv.haz.splice(i,1); }
+  }
 }
 const orbGeo=new THREE.SphereGeometry(0.45,14,10);
 function fireOrb(e, ang){
@@ -1355,7 +1472,7 @@ function updateEnemy(e,dt){
   // regeneración lenta si llevan 5 s sin recibir golpes
   e.sinceHit+=dt;
   if(e.sinceHit>=5 && e.hp<e.max && !P.dead){
-    e.regenAcc+=dt*e.max*0.04;           // ≈ 4 / 6 / 8 puntos por segundo
+    e.regenAcc+=dt*e.max*0.048;           // ≈ 4 / 6 / 8 puntos por segundo
     if(e.regenAcc>=1){ const n=Math.floor(e.regenAcc); e.regenAcc-=n; e.hp=Math.min(e.max,e.hp+n); setEnemyHud(e); }
     e.regenFx-=dt; if(e.regenFx<=0){ e.regenFx=0.35; burst(new THREE.Vector3(e.x+rand(-e.r,e.r),e.y+e.H*0.5,e.z+rand(-e.r,e.r)),0x6dff9a,2,1.2,2.5); }
   }
@@ -1372,7 +1489,7 @@ function updateEnemy(e,dt){
     // decidir ataque
     if(e.cd<=0 && !P.dead){
       if(idx===0 && dist<3.5) beginAttack(e,'lunge');
-      else if(idx===0 && dist>6 && dist<17 && e.laserCd<=0){ beginAttack(e,'laser'); e.laserCd=e.rage?3.0:4.5; }
+      else if(idx===0 && dist>6 && dist<17 && e.laserCd<=0){ beginAttack(e,'laser'); e.laserCd=e.rage?2.2:3.4; e.burstLeft=Math.random()<(e.rage?0.6:0.45)?2:0; }
       else if(idx===1){ if(dist<4.4) beginAttack(e,'slam'); else if(dist>8 && e.chargeCd<=0){ beginAttack(e,'charge'); e.chargeCd=6; } }
       else if(idx===2){ if(dist<4.1) beginAttack(e,'melee'); else if(dist>5.5 && e.orbCd<=0) beginAttack(e,'orb'); }
     }
@@ -1424,7 +1541,7 @@ function updateEnemy(e,dt){
     e.beam.rotation.y=Math.atan2(e.dirx,e.dirz); const w=0.45+0.15*Math.sin(e.st*60); e.beam.scale.set(w,w,len); e.beam.material.opacity=0.95*(1-k*0.5);
     if(!e.hitDone){ const rx=P.x-e.x, rz=P.z-e.z, along=rx*e.dirx+rz*e.dirz, perp=Math.abs(rx*e.dirz-rz*e.dirx);
       if(along>0 && along<len+0.5 && perp<0.6+P.r){ if(hurtPlayer(e.laserDmg,{x:e.x,z:e.z,en:e})) e.hitDone=true; } }
-    if(e.st>=0.4){ e.beam.visible=false; e.state='recover'; e.st=0; }
+    if(e.st>=0.4){ e.beam.visible=false; if(e.burstLeft>0){ e.burstLeft--; beginAttack(e,'laser'); e.windDur=0.42/(e.rage?1.3:1); } else { e.state='recover'; e.st=0; } }
   }
   else if(e.state==='strike'){
     e.st+=dt;
@@ -1649,6 +1766,8 @@ function update(dt){
   // --- Enemigos ---
   for(const e of lv.enemies){ if(!e.removed){ updateEnemy(e,dt); animateEnemy(e,dt); } }
   lv.enemies = lv.enemies.filter(e=>!e.removed);
+
+  updateHazards(dt);
 
   // --- Proyectiles ---
   for(let i=lv.orbs.length-1;i>=0;i--){
