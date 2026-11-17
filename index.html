@@ -135,6 +135,9 @@ h1,h2,h3,.orb{font-family:'Orbitron','Segoe UI',sans-serif}
 #combo span.on{background:var(--amber);border-color:#ffd9a0;box-shadow:0 0 9px var(--amber)}
 .float.crit{color:#ffb020;font-size:30px;text-shadow:0 0 14px #ff7a00,0 2px 4px #000}
 .float.hurt.crit{color:#ff3050;text-shadow:0 0 14px #ff0030,0 2px 4px #000}
+#parts{margin:8px 0 0 52px;font-family:'Orbitron';font-size:12px;letter-spacing:.12em;color:#cfe;background:rgba(0,0,0,.5);border:1px solid var(--line);padding:4px 10px;display:inline-block}
+#parts b{color:var(--amber)} #parts.done{color:var(--green);border-color:var(--green)} #parts.done b{color:var(--green)}
+.float.heal{color:#6dff9a;font-size:26px}
 </style>
 
 <script type="importmap">
@@ -164,6 +167,7 @@ h1,h2,h3,.orb{font-family:'Orbitron','Segoe UI',sans-serif}
         <svg viewBox="0 0 24 24" fill="none" stroke="#ffe3b8" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3h6M12 3v2M8 5h8l1 3v8l-1 3H8l-1-3V8z"/><circle cx="12" cy="12" r="2.2" fill="#ffb454"/></svg>
       </div>
     </div>
+    <div id="parts" class="hidden">⚙ PARTES DE LA NAVE <b>0/1</b></div>
   </div>
   <div id="hud-enemy" class="hidden">
     <div class="name">ANTAGONISTA</div>
@@ -356,6 +360,8 @@ function sfx(kind){
       case 'orb':   tone('sine',700,300,.25,.08); break;
       case 'die':   tone('square',300,30,.9,.12); break;
       case 'win':   [523,659,784,1047].forEach((f,i)=>tone('triangle',f,f,.35,.12,i*.16)); break;
+      case 'heal':  tone('sine',600,600,.1,.1); tone('sine',900,900,.1,.1,.08); tone('sine',1200,1200,.2,.1,.16); break;
+      case 'thud':  tone('sine',90,35,.25,.12); break;
       case 'crit':  tone('square',700,1700,.12,.1); tone('sawtooth',220,60,.22,.12); break;
       case 'laser': tone('sawtooth',1400,200,.45,.12); tone('square',300,60,.45,.05); break;
       case 'light': tone('sine',200,1400,.9,.12); break;
@@ -780,7 +786,7 @@ const P = {
   x:0,y:0,z:0,gy:0, r:PLAYER.radius, hts:HT_PLAYER,
   hp:STATS.playerHPLevels[0], max:STATS.playerHPLevels[0], vx:0,vz:0, face:0,
   dodgeT:0, dodgeCd:0, dodgeDx:0, dodgeDz:1, iframes:0, inv:0, dodgedTxt:0,
-  atkT:-1, atkCd:0, atkHit:false, dead:false, deadT:0, t:0, flash:0, queueAtk:false, kx:0, kz:0, combo:0, comboT:0, introT:0, introFrom:null
+  atkT:-1, atkCd:0, atkHit:false, dead:false, deadT:0, t:0, flash:0, queueAtk:false, kx:0, kz:0, combo:0, comboT:0, introT:0, introFrom:null, ph:0
 };
 let rob = null;   // rig
 // Separa los brazos del modelo (vienen en "T") y los cuelga a los lados con pivote en el hombro
@@ -803,11 +809,45 @@ function rigArms(modelRoot){
   }
   return out;
 }
+// Separa las piernas (una malla con ambas) en izquierda/derecha y las cuelga de la cadera
+function rigLegs(modelRoot){
+  const info=[]; modelRoot.traverse(o=>{ if(o.isMesh){ o.geometry.computeBoundingBox(); info.push({m:o,b:o.geometry.boundingBox.clone()}); } });
+  let minY=Infinity, maxY=-Infinity;
+  for(const i of info){ if(i.b.max.y-i.b.min.y>3){ minY=Math.min(minY,i.b.min.y); maxY=Math.max(maxY,i.b.max.y); } }
+  const thr=minY+0.4*(maxY-minY);
+  const cand=info.filter(i=>i.b.max.y<thr && i.m.geometry.index && i.m.geometry.attributes.position);
+  if(!cand.length){ console.warn('No se detectaron las piernas de Rob.'); return null; }
+  const hipY=Math.max(...cand.map(i=>i.b.max.y));
+  const sides={'1':{pieces:[],cx:0,n:0},'-1':{pieces:[],cx:0,n:0}};
+  for(const i of cand){
+    const geo=i.m.geometry, idx=geo.index.array, pos=geo.attributes.position, iL=[], iR=[];
+    for(let k=0;k<idx.length;k+=3){ const cx=(pos.getX(idx[k])+pos.getX(idx[k+1])+pos.getX(idx[k+2]))/3; (cx<0?iL:iR).push(idx[k],idx[k+1],idx[k+2]); }
+    if(!iL.length||!iR.length) continue;
+    const parent=i.m.parent;
+    for(const [side,arr] of [[-1,iL],[1,iR]]){
+      const g=geo.clone(); g.setIndex(arr); g.computeBoundingBox();
+      const mesh=new THREE.Mesh(g,i.m.material); mesh.name=i.m.name+'_pierna'+side;
+      parent.add(mesh); sides[side].pieces.push(mesh);
+      sides[side].cx+=g.boundingBox.getCenter(new THREE.Vector3()).x; sides[side].n++;
+    }
+    parent.remove(i.m);
+  }
+  if(!sides[1].n||!sides[-1].n) return null;
+  const out={};
+  for(const side of [1,-1]){
+    const cx=sides[side].cx/sides[side].n, pivot=new THREE.Group(), parent=sides[side].pieces[0].parent;
+    pivot.position.set(cx,hipY,0); parent.add(pivot);
+    for(const m of sides[side].pieces){ pivot.add(m); m.position.set(-cx,-hipY,0); }
+    out[side]=pivot;
+  }
+  return out;
+}
 function buildRob(){
   const root=new THREE.Group(), yaw=new THREE.Group(), tilt=new THREE.Group();
   const m = normalizeModel(gltf.rob.scene.clone(true), MODEL_CFG.rob.height);
   const H=m.size.y;
   const arms = rigArms(m.group);
+  const legs = rigLegs(m.group);
   tilt.position.y=H/2; m.group.position.y=-H/2; tilt.add(m.group); yaw.add(tilt); root.add(yaw);
   const mats = collectMats(m.group);
   const sw = normalizeModel(gltf.sword.scene.clone(true), MODEL_CFG.sword.height);
@@ -827,7 +867,7 @@ function buildRob(){
   }
   const shadow = makeShadow(2.4);
   scene.add(root);
-  return { root,yaw,tilt,swordPivot,lanternHolder,lanternSway,mats,shadow,H,size:m.size, armR:arms?arms[1]:null, armL:arms?arms[-1]:null, aR:0, aL:0 };
+  return { root,yaw,tilt,swordPivot,lanternHolder,lanternSway,mats,shadow,H,size:m.size, armR:arms?arms[1]:null, armL:arms?arms[-1]:null, aR:0, aL:0, legR:legs?legs[1]:null, legL:legs?legs[-1]:null, lR:0, lL:0 };
 }
 function refreshEquipment(){
   if(!rob) return;
@@ -920,6 +960,8 @@ async function setupLevel(i){
   if(lv){
     for(const e of lv.enemies){ scene.remove(e.root); if(e.shadow) scene.remove(e.shadow); if(e.tele) scene.remove(e.tele); if(e.beam) scene.remove(e.beam); if(e.shieldMesh) scene.remove(e.shieldMesh); }
     for(const w of lv.waves) scene.remove(w.mesh);
+    for(const p of lv.parts){ scene.remove(p.root); scene.remove(p.shadow); }
+    for(const h of lv.heals){ scene.remove(h.root); scene.remove(h.shadow); }
     for(const p of lv.pickups){ scene.remove(p.root); }
     for(const o of lv.orbs) scene.remove(o.mesh);
     for(const l of lv.extraLights) scene.remove(l);
@@ -931,7 +973,7 @@ async function setupLevel(i){
   const cfg=LEVELS[i], asset=prepareLevelAsset(i);
   cur={ ...asset, cs: BVH ? 1.0 : 2.0, region:null };
   scene.add(cur.root);
-  lv={ i, enemies:[], pickups:[], orbs:[], extraLights:[], waves:[], enemyTimer:null, enemySpawned:false, won:false, wonT:0, t:0, spawn:null, cfg };
+  lv={ i, enemies:[], pickups:[], orbs:[], extraLights:[], waves:[], parts:[], heals:[], partsSpawned:false, partsTotal:0, partsGot:0, enemyTimer:null, enemySpawned:false, won:false, wonT:0, t:0, spawn:null, cfg };
 
   fadeText(cfg.title, 'Preparando escenario…');
   await sleep(30);
@@ -964,12 +1006,76 @@ async function setupLevel(i){
     else lv.enemyTimer=1.6;
   } else lv.enemyTimer=1.8;
 
+  spawnHeals(); $('parts').classList.add('hidden');
   $('hud-level').textContent = cfg.title;
   setEnemyHud(null); $('hud-prompt').classList.add('hidden');
   updateObjective();
   $('hud-controls').style.opacity=1; setTimeout(()=>{ if(lv&&lv.i===i) $('hud-controls').style.opacity=.0; }, 14000);
 }
 
+const PARTS_COUNT=[1,2,3];      // partes de la nave que aparecen en el nivel 1, 2 y 3
+const PARTS_REQUIRED=true;      // true: hay que derrotar al antagonista Y recoger todas las partes para pasar de nivel
+const HEAL_AMOUNT=40;           // vida que devuelve cada cruz verde
+let partTex=null, partLabelTex=null;
+function makePartTex(){
+  const c=document.createElement('canvas'); c.width=c.height=256; const x=c.getContext('2d');
+  const g=x.createRadialGradient(128,128,20,128,128,120); g.addColorStop(0,'#22222a'); g.addColorStop(1,'#000');
+  x.fillStyle=g; x.beginPath(); x.arc(128,128,112,0,7); x.fill();
+  x.lineWidth=10; x.strokeStyle='#8fa3bf'; x.beginPath(); x.arc(128,128,112,0,7); x.stroke();
+  x.fillStyle='#8fa3bf'; for(let i=0;i<8;i++){ x.save(); x.translate(128,128); x.rotate(i*Math.PI/4); x.fillRect(-12,-62,24,24); x.restore(); }
+  x.beginPath(); x.arc(128,128,44,0,7); x.fill(); x.fillStyle='#050508'; x.beginPath(); x.arc(128,128,18,0,7); x.fill();
+  const t=new THREE.CanvasTexture(c); t.colorSpace=THREE.SRGBColorSpace; return t;
+}
+function makeLabelTex(text){
+  const c=document.createElement('canvas'); c.width=512; c.height=100; const x=c.getContext('2d');
+  x.fillStyle='rgba(0,0,0,.82)'; x.strokeStyle='#8fa3bf'; x.lineWidth=4; x.beginPath(); x.roundRect(6,10,500,80,18); x.fill(); x.stroke();
+  x.fillStyle='#e8f1ff'; x.font='700 40px Orbitron, Arial, sans-serif'; x.textAlign='center'; x.textBaseline='middle'; x.fillText(text,256,52);
+  const t=new THREE.CanvasTexture(c); t.colorSpace=THREE.SRGBColorSpace; return t;
+}
+function setPartsHud(){
+  const el=$('parts'); if(!lv||!lv.partsTotal){ el.classList.add('hidden'); return; }
+  el.classList.remove('hidden'); el.querySelector('b').textContent=lv.partsGot+'/'+lv.partsTotal; el.classList.toggle('done',lv.partsGot>=lv.partsTotal);
+}
+function spawnParts(n){
+  if(lv.partsSpawned||!n) return; lv.partsSpawned=true; lv.partsTotal=n; lv.partsGot=0;
+  if(!partTex){ partTex=makePartTex(); partLabelTex=makeLabelTex('PARTE DE LA NAVE'); }
+  const placed=[];
+  for(let k=0;k<n;k++){
+    let cell=null;
+    for(let tries=0;tries<25;tries++){ const c=pickCell({from:{x:P.x,y:P.y,z:P.z},minD:9,maxD:1e9,interior:true}); if(!cell) cell=c; if(placed.every(p=>Math.hypot(p.x-c.x,p.z-c.z)>=7)){ cell=c; break; } }
+    placed.push(cell);
+    const root=new THREE.Group();
+    const disc=new THREE.Sprite(new THREE.SpriteMaterial({map:partTex,transparent:true,depthWrite:false,fog:false})); disc.scale.set(2.2,2.2,1); disc.position.y=1.5; root.add(disc);
+    const label=new THREE.Sprite(new THREE.SpriteMaterial({map:partLabelTex,transparent:true,depthWrite:false,fog:false})); label.scale.set(4.4,0.86,1); label.position.y=3.1; root.add(label);
+    const glow=new THREE.Sprite(new THREE.SpriteMaterial({map:glowTex,color:0x8fb8ff,transparent:true,depthWrite:false,blending:THREE.AdditiveBlending,fog:false})); glow.scale.set(5,5,1); glow.position.y=1.5; root.add(glow);
+    root.position.set(cell.x,cell.y,cell.z); scene.add(root);
+    const shadow=makeShadow(1.6); shadow.position.set(cell.x,cell.y+0.06,cell.z);
+    lv.parts.push({root,disc,glow,shadow,x:cell.x,y:cell.y,z:cell.z,t:Math.random()*6});
+  }
+  setPartsHud(); updateObjective();
+  const L=lv; setTimeout(()=>{ if(lv===L && !L.won && state==='playing') hint('RECOGE LAS '+(n>1?n+' PARTES':'PARTE')+' DE LA NAVE',3200); },3300);
+}
+function collectPart(i){
+  const p=lv.parts[i]; scene.remove(p.root); scene.remove(p.shadow); lv.parts.splice(i,1); lv.partsGot++;
+  sfx('pickup'); burst(new THREE.Vector3(p.x,p.y+1.5,p.z),0x9fc4ff,22,6,5);
+  floater(new THREE.Vector3(p.x,p.y+3,p.z),'PARTE DE LA NAVE '+lv.partsGot+'/'+lv.partsTotal,'info');
+  setPartsHud(); updateObjective();
+  if(lv.partsGot>=lv.partsTotal) hint('¡TODAS LAS PARTES RECOGIDAS!',2500);
+}
+function spawnHeals(){
+  const n=Math.random()<0.5?1:2;
+  const mat=new THREE.MeshStandardMaterial({color:0x2bd46a,emissive:0x18b552,emissiveIntensity:1.4,metalness:0.1,roughness:0.4});
+  for(let k=0;k<n;k++){
+    const cell=pickCell({from:lv.spawn,minD:8,maxD:1e9,interior:true});
+    const root=new THREE.Group(), holder=new THREE.Group();
+    holder.add(new THREE.Mesh(new THREE.BoxGeometry(0.38,1.2,0.38),mat), new THREE.Mesh(new THREE.BoxGeometry(1.2,0.38,0.38),mat));
+    holder.position.y=1.2; root.add(holder);
+    const glow=new THREE.Sprite(new THREE.SpriteMaterial({map:glowTex,color:0x55ff99,transparent:true,depthWrite:false,blending:THREE.AdditiveBlending,fog:false})); glow.scale.set(3.6,3.6,1); glow.position.y=1.2; root.add(glow);
+    root.position.set(cell.x,cell.y,cell.z); scene.add(root);
+    const shadow=makeShadow(1.3); shadow.position.set(cell.x,cell.y+0.06,cell.z);
+    lv.heals.push({root,holder,glow,shadow,x:cell.x,y:cell.y,z:cell.z,t:Math.random()*6});
+  }
+}
 let fireTex=null, smokeTex=null;
 function buildShip(sp){
   if(!fireTex){
@@ -1128,6 +1234,31 @@ function setEnemyHud(e){
   bar.querySelector('.fill').style.width=pct+'%'; bar.querySelector('.lag').style.width=pct+'%';
   bar.querySelector('span').textContent=`${e.hp} / ${e.max}`;
 }
+// Ondulación en el vértice (serpiente / tentáculos de medusa) sin necesidad de huesos
+function setupWave(group, axisW, dirW, freq, taper){
+  group.updateMatrixWorld(true);
+  const U={uTime:{value:0},uAmp:{value:0},uSpeed:{value:8},uFreq:{value:freq}};
+  group.traverse(o=>{
+    if(!o.isMesh) return;
+    o.geometry.computeBoundingBox(); const bb=o.geometry.boundingBox;
+    const inv=new THREE.Matrix3().setFromMatrix4(o.matrixWorld).invert();
+    const ax=axisW.clone().applyMatrix3(inv).normalize(), di=dirW.clone().applyMatrix3(inv).normalize();
+    let mn=1e9,mx=-1e9;
+    for(const x of [bb.min.x,bb.max.x]) for(const y of [bb.min.y,bb.max.y]) for(const z of [bb.min.z,bb.max.z]){ const d=x*ax.x+y*ax.y+z*ax.z; mn=Math.min(mn,d); mx=Math.max(mx,d); }
+    const len=Math.max(1e-4,mx-mn);
+    for(const m of (Array.isArray(o.material)?o.material:[o.material])){
+      m.onBeforeCompile=sh=>{
+        Object.assign(sh.uniforms,{uTime:U.uTime,uAmp:U.uAmp,uSpeed:U.uSpeed,uFreq:U.uFreq,uMin:{value:mn},uLen:{value:len},uAxis:{value:ax},uDir:{value:di}});
+        sh.vertexShader=sh.vertexShader
+          .replace('#include <common>','#include <common>\nuniform float uTime;uniform float uAmp;uniform float uSpeed;uniform float uFreq;uniform float uMin;uniform float uLen;uniform vec3 uAxis;uniform vec3 uDir;')
+          .replace('#include <begin_vertex>','#include <begin_vertex>\n{ float u_=clamp((dot(position,uAxis)-uMin)/uLen,0.0,1.0); float k_='+(taper?'(0.25+0.75*u_)':'1.0')+'; transformed+=uDir*sin(u_*uFreq-uTime*uSpeed)*uAmp*uLen*k_; }');
+      };
+      m.customProgramCacheKey=()=>'wave'+(taper?'T':'F');
+      m.needsUpdate=true;
+    }
+  });
+  return U;
+}
 function spawnEnemy(idx){
   const def=ENEMIES[idx];
   const cell = pickCell({from:{x:P.x,y:P.y,z:P.z}, minD:10, maxD:16, interior:true});
@@ -1137,15 +1268,19 @@ function spawnEnemy(idx){
   root.scale.setScalar(0.01); scene.add(root);
   const tele=new THREE.Mesh(new THREE.CircleGeometry(1,40).rotateX(-Math.PI/2), new THREE.MeshBasicMaterial({color:0xff2a3a,transparent:true,opacity:.35,depthTest:false,depthWrite:false}));
   tele.visible=false; tele.renderOrder=5; scene.add(tele);
+  let waveU=null;
+  if(idx===0){ const bs=new THREE.Box3().setFromObject(m.group).getSize(new THREE.Vector3()); const alongZ=bs.z>=bs.x;
+    waveU=setupWave(m.group, alongZ?new THREE.Vector3(0,0,1):new THREE.Vector3(1,0,0), alongZ?new THREE.Vector3(1,0,0):new THREE.Vector3(0,0,1), 8.5, true); }
+  if(idx===2){ waveU=setupWave(m.group, new THREE.Vector3(0,-1,0), new THREE.Vector3(1,0,0), 5, true); }
   let beam=null, shieldMesh=null;
   if(idx===0){ beam=new THREE.Mesh(new THREE.BoxGeometry(1,1,1),new THREE.MeshBasicMaterial({color:0xff4060,transparent:true,opacity:0.9,depthWrite:false,blending:THREE.AdditiveBlending,fog:false})); beam.visible=false; scene.add(beam); }
   if(idx===1){ shieldMesh=new THREE.Mesh(new THREE.SphereGeometry(1,24,16),new THREE.MeshBasicMaterial({color:0x66ddff,transparent:true,opacity:0.3,depthWrite:false,blending:THREE.AdditiveBlending,fog:false})); shieldMesh.visible=false; scene.add(shieldMesh); }
   const e={ def, idx, root,yaw,tilt, mats:collectMats(m.group), shadow:makeShadow(Math.max(2.2,def.r*2.6)), tele,
     x:cell.x,y:cell.y,z:cell.z,gy:cell.y, r:def.r, hts:[0.4,Math.max(1,H*0.5)], H,
     hp:STATS.enemyHP[idx], max:STATS.enemyHP[idx], state:'spawn', st:0, t:Math.random()*6, face:Math.atan2(P.x-cell.x,P.z-cell.z),
-    kx:0,kz:0, stun:0, flash:0, hitAnim:0, cd:1.0, orbCd:2.0, chargeCd:3, stuck:0, sideT:0, sideDir:1, atk:null, hitDone:false, dirx:0,dirz:1, rage:false, deadT:0, moving:0, dmg:def.dmg||STATS.enemyDamage, laserDmg:20, laserCd:3, shield:0, windDur:0.5, beam, shieldMesh, beamLen:10 };
+    kx:0,kz:0, stun:0, flash:0, hitAnim:0, cd:1.0, orbCd:2.0, chargeCd:3, stuck:0, sideT:0, sideDir:1, atk:null, hitDone:false, dirx:0,dirz:1, rage:false, deadT:0, moving:0, dmg:def.dmg||STATS.enemyDamage, laserDmg:20, laserCd:3, shield:0, windDur:0.5, beam, shieldMesh, beamLen:10, waveU, ph:0, hopV:0, landV:0, prevS:0, amp:0, sinceHit:0, regenAcc:0, regenFx:0, sh:Math.max(2.2,def.r*2.6) };
   lv.enemies.push(e); lv.enemySpawned=true;
-  playMusic(['l1t','l2t','l3'][idx]); sfx('spawn'); shake=0.7; screenFlash('#ff8899',.35);
+  playMusic(['l1t','l2t','l3'][idx]); sfx('spawn'); shake=0.7; spawnParts(PARTS_COUNT[idx]); screenFlash('#ff8899',.35);
   burst(new THREE.Vector3(e.x,e.y+0.5,e.z),0xff5a8a,26,7,5);
   hint('¡APARECE '+def.name+'!',3000);
   setEnemyHud(e); updateObjective();
@@ -1153,7 +1288,7 @@ function spawnEnemy(idx){
 function hitEnemy(e, dmg, crit){
   if(e.state==='dead'||e.state==='spawn') return false;
   if(e.shield>0){ floater(new THREE.Vector3(e.x,e.y+e.H+0.4,e.z),'¡BLOQUEADO!','info'); burst(new THREE.Vector3(e.x,e.y+e.H*0.5,e.z),0x66ddff,8,5,3); sfx('orb'); return false; }
-  e.hp=Math.max(0,e.hp-dmg); e.flash=0.16; e.hitAnim=0.22;
+  e.hp=Math.max(0,e.hp-dmg); e.sinceHit=0; e.flash=0.16; e.hitAnim=0.22;
   const dx=e.x-P.x, dz=e.z-P.z, l=Math.hypot(dx,dz)||1;
   const attacking=(e.state==='windup'||e.state==='strike');
   const armored = attacking && e.def.armor;
@@ -1175,7 +1310,7 @@ function killEnemy(e){
   burst(new THREE.Vector3(e.x,e.y+e.H*0.5,e.z),0xff7aa0,40,9,7);
   setEnemyHud(null);
   lv.won=true; lv.wonT=0; updateObjective();
-  hint(e.def.name+' DERROTADO',2500);
+  hint(e.def.name+' DERROTADO'+((PARTS_REQUIRED&&lv.partsGot<lv.partsTotal)?' — ¡RECOGE LAS PARTES!':''),3200);
 }
 const orbGeo=new THREE.SphereGeometry(0.45,14,10);
 function fireOrb(e, ang){
@@ -1216,6 +1351,13 @@ function updateEnemy(e,dt){
     e.root.visible = Math.floor(e.deadT*20)%2===0 || k>0.7;
     if(e.deadT>=1.2){ scene.remove(e.root); scene.remove(e.shadow); scene.remove(e.tele); if(e.beam) scene.remove(e.beam); if(e.shieldMesh) scene.remove(e.shieldMesh); e.removed=true; }
     return;
+  }
+  // regeneración lenta si llevan 5 s sin recibir golpes
+  e.sinceHit+=dt;
+  if(e.sinceHit>=5 && e.hp<e.max && !P.dead){
+    e.regenAcc+=dt*e.max*0.04;           // ≈ 4 / 6 / 8 puntos por segundo
+    if(e.regenAcc>=1){ const n=Math.floor(e.regenAcc); e.regenAcc-=n; e.hp=Math.min(e.max,e.hp+n); setEnemyHud(e); }
+    e.regenFx-=dt; if(e.regenFx<=0){ e.regenFx=0.35; burst(new THREE.Vector3(e.x+rand(-e.r,e.r),e.y+e.H*0.5,e.z+rand(-e.r,e.r)),0x6dff9a,2,1.2,2.5); }
   }
   // retroceso
   if(Math.abs(e.kx)+Math.abs(e.kz)>0.05){ moveEnt(e,e.kx*dt,e.kz*dt); const f=Math.exp(-9*dt); e.kx*=f; e.kz*=f; }
@@ -1310,10 +1452,27 @@ function animateEnemy(e,dt){
   const walk = e.moving? Math.abs(Math.sin(e.t*11)) : 0;
   bob = walk*0.12 + (e.moving?0:Math.sin(e.t*2.5)*0.04);
   roll = e.moving? Math.sin(e.t*11)*0.09 : Math.sin(e.t*2)*0.03;
+  // ---- movimiento propio de cada antagonista ----
+  if(e.idx===0){            // serpiente: ondulación fluida del cuerpo
+    const target=e.state==='strike'?0.12:(e.moving?0.075:0.03);
+    e.amp+=(target-e.amp)*Math.min(1,dt*8);
+    e.waveU.uAmp.value=e.amp; e.waveU.uSpeed.value=(e.moving||e.state==='strike')?11:4; e.waveU.uTime.value=e.t;
+    roll=Math.sin(e.t*(e.moving?9:3))*0.1; bob=e.moving?0.03:0;
+  } else if(e.idx===1){     // pesado: saltos lentos y aplastamiento al caer
+    if(e.moving) e.ph+=dt*3.4*(e.rage?1.4:1);
+    const sn=Math.sin(e.ph), kk=Math.min(1,dt*18);
+    e.hopV+=((e.moving?Math.max(0,sn):0)-e.hopV)*kk; e.landV+=((e.moving?Math.max(0,-sn):0)-e.landV)*kk;
+    if(e.moving && e.prevS>0 && sn<=0){ const d=Math.hypot(P.x-e.x,P.z-e.z); if(d<18){ shake=Math.max(shake,0.05+0.25*(1-d/18)); sfx('thud'); burst(new THREE.Vector3(e.x,e.y+0.2,e.z),0xb9a98a,6,3,1.2); } }
+    e.prevS=sn;
+    bob=e.hopV*0.45; sy*=1+0.07*e.hopV-0.13*e.landV; sx*=1+0.09*e.landV; sz*=1+0.09*e.landV; roll=e.moving?Math.sin(e.ph*0.5)*0.09:0;
+  } else {                  // medusa: flota subiendo y bajando
+    e.waveU.uAmp.value=0.06; e.waveU.uSpeed.value=e.rage?7:4.5; e.waveU.uTime.value=e.t;
+    bob=1.3+0.8*Math.sin(e.t*2.4)+0.15*Math.sin(e.t*7); roll=Math.sin(e.t*1.7)*0.06; sy*=1+0.05*Math.sin(e.t*4.8);
+  }
   if(e.state==='windup'){
     const p=clamp(e.st/e.windDur,0,1);
-    if(e.atk==='slam'){ bob=p*1.0; sy=1+p*0.12; sx=sz=1-p*0.08; }
-    else if(e.atk==='orb'){ bob=p*0.5; sy=1+p*0.1; }
+    if(e.atk==='slam'){ bob+=p*1.0; sy=1+p*0.12; sx=sz=1-p*0.08; }
+    else if(e.atk==='orb'){ bob+=p*0.5; sy=1+p*0.1; }
     else { sy=1-p*0.22; sx=sz=1+p*0.1; }
     setFlash(e.mats,0.25+0.25*Math.sin(e.t*30),0xff2020);
   } else if(e.state==='strike'){ sz=1.15; sy=0.92; setFlash(e.mats,0.3,0xff3030); }
@@ -1324,7 +1483,7 @@ function animateEnemy(e,dt){
   e.root.position.set(e.x,e.y+bob,e.z);
   e.yaw.rotation.y=e.face+MODEL_CFG[e.def.key].yaw;
   e.tilt.rotation.z=roll; e.yaw.scale.set(sx,sy,sz);
-  e.shadow.position.set(e.x,e.y+0.07,e.z);
+  e.shadow.position.set(e.x,e.y+0.07,e.z); { const ks=1-Math.min(0.5,bob*0.12); e.shadow.scale.set(e.sh*ks,1,e.sh*ks); }
 }
 
 /* ---------------------------------------------------------------------
@@ -1361,10 +1520,18 @@ function updateObjective(){
   else if(i===1){ if(!G.hasLantern){ t='Encuentra el farol en el bosque oscuro'; } else t = (alive||lv.enemySpawned) ? 'Derrota al Antagonista 2' : 'El bosque se ilumina…'; }
   else t = (alive||lv.enemySpawned) ? 'Derrota al Antagonista 3 — ¡Combate final!' : 'Prepárate…';
   if(lv.won) t='¡Enemigo derrotado!';
+  if(PARTS_REQUIRED && lv.partsTotal && lv.partsGot<lv.partsTotal) t = lv.won ? '¡Recoge las partes de la nave que faltan!' : t+' y recoge las partes de la nave';
   lv.objText=t; o.innerHTML=t+'<small></small>';
 }
 function updateProximity(){
-  if(!lv||!lv.pickups.length){ return; }
+  if(!lv) return;
+  if(!lv.pickups.length){
+    $('hud-prompt').classList.add('hidden');
+    const sm0=$('hud-obj').querySelector('small'); let np=null, nd=1e9;
+    for(const q of lv.parts){ const dd=Math.hypot(q.x-P.x,q.z-P.z); if(dd<nd){ nd=dd; np=q; } }
+    if(sm0) sm0.textContent = np ? (nd<5?'🔥 ¡Parte muy cerca!':nd<11?'Parte: caliente':nd<20?'Parte: tibio':'Parte: frío') : '';
+    return;
+  }
   const p=lv.pickups[0], d=Math.hypot(p.x-P.x,p.z-P.z);
   const txt = d<5 ? '🔥 ¡Muy cerca!' : d<11 ? 'Caliente' : d<20 ? 'Tibio' : 'Frío';
   const sm=$('hud-obj').querySelector('small'); if(sm) sm.textContent=txt;
@@ -1409,14 +1576,16 @@ function update(dt){
   // animación Rob
   {
     const mv=Math.hypot(P.vx,P.vz), walking=mv>0.5&&!P.dead&&P.dodgeT<=0;
-    const bob=walking?Math.abs(Math.sin(P.t*13))*0.09:Math.sin(P.t*2.4)*0.02;
+    if(walking) P.ph+=dt*Math.min(mv,PLAYER.speed)*1.9;
+    const bob=walking?Math.abs(Math.sin(P.ph))*0.09:Math.sin(P.t*2.4)*0.02;
     rob.root.position.set(P.x,P.y+bob,P.z);
     if(P.introT>0 && P.introFrom){ P.introT=Math.max(0,P.introT-dt); const k=1-P.introT/1.2, f=P.introFrom, e=k*k*(3-2*k);
       rob.root.position.set(f.x+(P.x-f.x)*e, f.y+(P.y-f.y)*e+Math.sin(k*Math.PI)*1.8, f.z+(P.z-f.z)*e); }
     rob.yaw.rotation.y=P.face+MODEL_CFG.rob.yaw;
-    let rx=0, rz=walking?Math.sin(P.t*13)*0.07:0, sy=1;
+    let rx=0, rz=walking?Math.sin(P.ph)*0.07:0, sy=1;
     if(P.dodgeT>0){ const p=1-P.dodgeT/PLAYER.dodgeTime; rx=p*Math.PI*2; sy=0.85; }
     else if(P.atkT>=0) rx=0.18*Math.sin(P.atkT/PLAYER.attackTime*Math.PI);
+    else if(walking) rx=0.1;
     if(P.dead){ const p=clamp(P.deadT/0.6,0,1); rx=-p*1.45; rob.root.position.y=P.y-p*0.2; }
     rob.tilt.rotation.set(rx,0,rz); rob.tilt.scale.set(1,sy,1);
     rob.root.visible = !(P.inv>0 && Math.floor(P.t*16)%2===0 && !P.dead);
@@ -1424,7 +1593,7 @@ function update(dt){
     rob.shadow.position.set(P.x,P.y+0.07,P.z); rob.shadow.visible=rob.root.visible||true;
     // brazos (estilo Minecraft) y espada en la mano
     {
-      const t=P.t, sw=walking?Math.sin(t*13):0;
+      const t=P.t, sw=walking?Math.sin(P.ph):0;
       let rA = G.hasSword ? -0.3+(walking?sw*0.5:Math.sin(t*2)*0.04) : (walking?sw*0.65:Math.sin(t*2)*0.05);
       let lA = (G.hasLantern?-0.4:-0.05)+(walking?-sw*0.65:Math.sin(t*2+1)*0.05);
       if(P.dodgeT>0){ rA=0.9; lA=0.9; }
@@ -1439,15 +1608,32 @@ function update(dt){
       const ka=1-Math.exp(-dt*(P.atkT>=0?60:16));
       rob.aR+=(rA-rob.aR)*ka; rob.aL+=(lA-rob.aL)*ka;
       if(rob.armR){ rob.armR.pivot.rotation.x=rob.aR; rob.armL.pivot.rotation.x=rob.aL; }
+      // piernas: zancada al correr (opuestas a los brazos), ligera apertura al esquivar
+      let tR=walking?-sw*0.8:0, tL=walking?sw*0.8:0;
+      if(P.dodgeT>0){ tR=-0.7; tL=0.7; }
+      const kl=1-Math.exp(-dt*18); rob.lR+=(tR-rob.lR)*kl; rob.lL+=(tL-rob.lL)*kl;
+      if(rob.legR){ rob.legR.rotation.x=rob.lR; rob.legL.rotation.x=rob.lL; }
     }
     // farol
-    rob.lanternSway.rotation.z=Math.sin(P.t*3.2)*0.12+(walking?Math.sin(P.t*13)*0.08:0);
+    rob.lanternSway.rotation.z=Math.sin(P.t*3.2)*0.12+(walking?Math.sin(P.ph)*0.08:0);
     // luz que sigue a Rob
     const lp = G.hasLantern ? rob.lanternHolder.position : null;
     robLight.position.set(P.x + (lp? -Math.sin(P.face+Math.PI/2)*0 :0), P.y+(G.hasLantern?2.6:2.4), P.z+0.3);
   }
 
   if(lv.fire) updateFire(dt,gameTime);
+
+  // --- Partes de la nave y cruces de curación ---
+  for(const p of lv.parts){ p.t+=dt; p.disc.position.y=1.5+Math.sin(p.t*2.2)*0.18; p.glow.material.opacity=0.45+0.3*Math.sin(p.t*3); }
+  for(let i=lv.parts.length-1;i>=0;i--){ const p=lv.parts[i]; if(!P.dead && P.introT<=0 && Math.hypot(p.x-P.x,p.z-P.z)<1.8) collectPart(i); }
+  for(let i=lv.heals.length-1;i>=0;i--){
+    const h=lv.heals[i]; h.t+=dt; h.holder.position.y=1.2+Math.sin(h.t*2.4)*0.2; h.holder.rotation.y+=dt*1.8; h.glow.material.opacity=0.55+0.3*Math.sin(h.t*3.2);
+    if(!P.dead && P.hp<P.max && Math.hypot(h.x-P.x,h.z-P.z)<1.8){
+      const gain=Math.min(HEAL_AMOUNT,P.max-P.hp); P.hp+=gain; sfx('heal');
+      floater(new THREE.Vector3(P.x,P.y+2.4,P.z),'+'+gain,'heal'); burst(new THREE.Vector3(h.x,h.y+1.2,h.z),0x6dff9a,20,5,5);
+      scene.remove(h.root); scene.remove(h.shadow); lv.heals.splice(i,1);
+    }
+  }
 
   // --- Objetos ---
   for(const p of lv.pickups){
@@ -1478,7 +1664,7 @@ function update(dt){
   for(let i=lv.waves.length-1;i>=0;i--){ const w=lv.waves[i]; w.t+=dt; const r=0.6+(w.t/0.45)*9; w.mesh.scale.set(r,1,r); w.mesh.material.opacity=0.85*Math.max(0,1-w.t/0.5); if(w.t>0.5){ scene.remove(w.mesh); lv.waves.splice(i,1); } }
 
   // --- Victoria de nivel ---
-  if(lv.won){ lv.wonT+=dt; if(lv.wonT>1.8 && state==='playing'){ levelComplete(); } }
+  if(lv.won && (!PARTS_REQUIRED || lv.partsGot>=lv.partsTotal)){ lv.wonT+=dt; if(lv.wonT>1.8 && state==='playing'){ levelComplete(); } }
 
   // --- Entorno ---
   applyEnv(dt, gameTime);
